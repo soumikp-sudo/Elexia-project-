@@ -1,0 +1,136 @@
+import pandas as pd
+import numpy as np
+import yfinance as yf
+import requests
+from textblob import TextBlob
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import MinMaxScaler
+from sklearn.ensemble import RandomForestRegressor
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+class StockMarketPredictor:
+    def __init__(self, stock_symbol, start_date, end_date, news_api_key):
+        self.stock_symbol = stock_symbol
+        self.start_date = start_date
+        self.end_date = end_date
+        self.news_api_key = news_api_key
+        self.stock_data = None
+        self.news_data = None
+        
+    def fetch_stock_data(self):
+        self.stock_data = yf.download(
+            self.stock_symbol, 
+            start=self.start_date, 
+            end=self.end_date
+        )
+        return self.stock_data
+    
+    def fetch_financial_news(self):
+        url = f"https://newsapi.org/v2/everything?q={self.stock_symbol}&apiKey={self.news_api_key}"
+        response = requests.get(url)
+        articles = response.json().get('articles', [])
+        self.news_data = [
+            str(article.get('title', '')) + " " + str(article.get('description', '')) 
+            for article in articles[:50]  # Limit to 50 articles
+            if article.get('title') is not None
+        ]
+        return self.news_data
+    
+    def perform_sentiment_analysis(self):
+        if self.news_data is None:
+            self.fetch_financial_news()
+        
+        sentiments = []
+        for article in self.news_data:
+            blob = TextBlob(article)
+            sentiments.append({
+                'text': article,
+                'polarity': blob.sentiment.polarity,
+                'subjectivity': blob.sentiment.subjectivity
+            })
+        
+        return pd.DataFrame(sentiments)
+    
+    def prepare_training_data(self):
+        if self.stock_data is None:
+            raise ValueError("Fetch stock data first")
+        
+        df = self.stock_data.copy()
+        df['Target'] = df['Close'].shift(-1)
+        df['Returns'] = df['Close'].pct_change()
+        df['MA50'] = df['Close'].rolling(window=50).mean()
+        df['MA200'] = df['Close'].rolling(window=200).mean()
+        
+        df.dropna(inplace=True)
+        
+        features = ['Open', 'High', 'Low', 'Close', 'Volume', 'Returns', 'MA50', 'MA200']
+        X = df[features]
+        y = df['Target']
+        
+        return X, y
+    
+    def train_prediction_model(self, X, y):
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=0.2, random_state=42
+        )
+        
+        scaler = MinMaxScaler()
+        X_train_scaled = scaler.fit_transform(X_train)
+        X_test_scaled = scaler.transform(X_test)
+        
+        model = RandomForestRegressor(n_estimators=100, random_state=42)
+        model.fit(X_train_scaled, y_train)
+        
+        return model, (X_train, X_test, y_train, y_test)
+    
+    def evaluate_model(self, model, X_test, y_test):
+        from sklearn.metrics import mean_squared_error, r2_score
+        
+        y_pred = model.predict(X_test)
+        
+        return {
+            'MSE': mean_squared_error(y_test, y_pred),
+            'R2_Score': r2_score(y_test, y_pred)
+        }
+    
+    def visualize_predictions(self, X_test, y_test, y_pred):
+        plt.figure(figsize=(12, 6))
+        plt.plot(y_test.values, label='Actual Prices', color='blue')
+        plt.plot(y_pred, label='Predicted Prices', color='red')
+        plt.title(f'{self.stock_symbol} Stock Price Prediction')
+        plt.xlabel('Time')
+        plt.ylabel('Stock Price')
+        plt.legend()
+        plt.show()
+    
+    def generate_report(self, sentiment_df, model_metrics):
+        print("Sentiment Analysis Summary:")
+        print(sentiment_df.describe())
+        
+        print("\nModel Performance Metrics:")
+        for metric, value in model_metrics.items():
+            print(f"{metric}: {value}")
+    
+def main():
+    NEWS_API_KEY = 'd640799231804be090dd14be3e110ba5'
+    
+    predictor = StockMarketPredictor('AAPL', '2022-01-01', '2023-12-31', NEWS_API_KEY)
+    
+    stock_data = predictor.fetch_stock_data()
+    
+    news_data = predictor.fetch_financial_news()
+    sentiment_df = predictor.perform_sentiment_analysis()
+    
+    X, y = predictor.prepare_training_data()
+    model, (X_train, X_test, y_train, y_test) = predictor.train_prediction_model(X, y)
+    
+    y_pred = model.predict(X_test)
+    model_metrics = predictor.evaluate_model(model, X_test, y_test)
+    
+    predictor.visualize_predictions(X_test, y_test, y_pred)
+    
+    predictor.generate_report(sentiment_df, model_metrics)
+
+if __name__ == "__main__":
+    main()
